@@ -1,0 +1,225 @@
+// Cerca data model.
+// - Prisma 7: Rust-free client, mandatory driver adapter, ESM client compiled to CJS for Nest.
+// - Money is ALWAYS Int minor units + a currency column. Never Float.
+// - Listing/Booking statuses are discriminated unions in the domain; here they are a
+//   `statusKind` enum + nullable per-variant columns, so "published near me" is an indexed
+//   query. The repository rebuilds the union when mapping row -> entity.
+// - `location` is PostGIS geography; the GiST index is added by hand in the migration
+//   (Prisma does not index an Unsupported column).
+
+generator client {
+  provider        = "prisma-client"
+  output          = "../src/generated/prisma"
+  moduleFormat    = "cjs"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+// Prisma 7: connection URLs live in prisma.config.ts (Migrate) and in the driver adapter
+// (runtime PrismaClient). The datasource block keeps only the provider and extensions.
+datasource db {
+  provider   = "postgresql"
+  extensions = [postgis]
+}
+
+enum Capacity {
+  customer
+  provider
+}
+
+enum PlatformRole {
+  user
+  moderator
+  admin
+}
+
+enum ListingStatusKind {
+  draft
+  published
+  paused
+  under_review
+  removed
+}
+
+enum BookingStatusKind {
+  requested
+  accepted
+  declined
+  completed
+  cancelled
+}
+
+enum ReportStatus {
+  open
+  resolved
+  dismissed
+}
+
+model User {
+  id            String         @id @default(uuid()) @db.Uuid
+  email         String         @unique
+  passwordHash  String
+  displayName   String
+  capacities    Capacity[] // array of enum: an account can hold both
+  platformRole  PlatformRole   @default(user)
+  suspendedAt   DateTime?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  listings      Listing[]
+  bookings      Booking[]      @relation("customer")
+  reviews       Review[]
+  reports       Report[]
+  favorites     Favorite[]
+  refreshTokens RefreshToken[]
+
+  @@index([platformRole])
+}
+
+model Category {
+  id        String    @id @default(uuid()) @db.Uuid
+  slug      String    @unique
+  name      String
+  createdAt DateTime  @default(now())
+  listings  Listing[]
+}
+
+model Listing {
+  id             String                                @id @default(uuid()) @db.Uuid
+  ownerId        String                                @db.Uuid
+  owner          User                                  @relation(fields: [ownerId], references: [id])
+  categoryId     String                                @db.Uuid
+  category       Category                              @relation(fields: [categoryId], references: [id])
+  title          String
+  description    String
+  pricing        Json // validated by pricingSchema (Zod is the source of truth)
+  priceMinorFrom Int? // denormalized for order/filter without opening the JSON
+  currency       String?                               @db.VarChar(3)
+  statusKind     ListingStatusKind                     @default(draft)
+  publishedAt    DateTime?
+  removedById    String?                               @db.Uuid
+  removalReason  String?
+  location       Unsupported("geography(Point, 4326)")? // PostGIS; GiST index added in migration SQL
+  ratingAvg      Float                                 @default(0)
+  ratingCount    Int                                   @default(0)
+  photos         ListingPhoto[]
+  bookings       Booking[]
+  reviews        Review[]
+  reports        Report[]
+  favorites      Favorite[]
+  createdAt      DateTime                              @default(now())
+  updatedAt      DateTime                              @updatedAt
+
+  @@index([categoryId])
+  @@index([ownerId])
+  @@index([statusKind])
+}
+
+model ListingPhoto {
+  id        String   @id @default(uuid()) @db.Uuid
+  listingId String   @db.Uuid
+  listing   Listing  @relation(fields: [listingId], references: [id])
+  key       String
+  blurhash  String?
+  createdAt DateTime @default(now())
+
+  @@index([listingId])
+}
+
+model Booking {
+  id            String            @id @default(uuid()) @db.Uuid
+  listingId     String            @db.Uuid
+  listing       Listing           @relation(fields: [listingId], references: [id])
+  customerId    String            @db.Uuid
+  customer      User              @relation("customer", fields: [customerId], references: [id])
+  statusKind    BookingStatusKind @default(requested)
+  requestedAt   DateTime          @default(now())
+  acceptedAt    DateTime?
+  scheduledFor  DateTime?
+  declineReason String?
+  completedAt   DateTime?
+  cancelledById String?           @db.Uuid
+  cancelledAt   DateTime?
+  reviewId      String?           @unique @db.Uuid // review uniqueness, guaranteed by the DB
+  review        Review?
+  createdAt     DateTime          @default(now())
+
+  @@index([customerId])
+  @@index([listingId])
+}
+
+model Review {
+  id          String    @id @default(uuid()) @db.Uuid
+  bookingId   String    @unique @db.Uuid
+  booking     Booking   @relation(fields: [bookingId], references: [id])
+  listingId   String    @db.Uuid
+  listing     Listing   @relation(fields: [listingId], references: [id])
+  authorId    String    @db.Uuid
+  author      User      @relation(fields: [authorId], references: [id])
+  rating      Int // 1..5
+  body        String
+  moderatedAt DateTime?
+  removedAt   DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@index([listingId])
+}
+
+// Append-only audit: who, WHICH CAPACITY they held at the time, what action, on what, when.
+model AuditEvent {
+  id                   String       @id @default(uuid()) @db.Uuid
+  actorId              String       @db.Uuid
+  capacitySnapshot     Capacity[] // the capacity AT THE MOMENT
+  platformRoleSnapshot PlatformRole
+  action               String // 'listing:remove', 'review:write', ...
+  targetType           String
+  targetId             String
+  metadata             Json?
+  at                   DateTime     @default(now())
+
+  @@index([targetType, targetId])
+  @@index([actorId])
+}
+
+model Report {
+  id             String       @id @default(uuid()) @db.Uuid
+  listingId      String       @db.Uuid
+  listing        Listing      @relation(fields: [listingId], references: [id])
+  reporterId     String       @db.Uuid
+  reporter       User         @relation(fields: [reporterId], references: [id])
+  reason         String
+  status         ReportStatus @default(open)
+  resolvedById   String?      @db.Uuid
+  resolvedAt     DateTime?
+  resolutionNote String?
+  createdAt      DateTime     @default(now())
+
+  @@index([status])
+  @@index([listingId])
+}
+
+model Favorite {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @db.Uuid
+  user      User     @relation(fields: [userId], references: [id])
+  listingId String   @db.Uuid
+  listing   Listing  @relation(fields: [listingId], references: [id])
+  createdAt DateTime @default(now())
+
+  @@unique([userId, listingId])
+}
+
+// Refresh-token rotation with reuse detection. A presented token that is already revoked
+// means theft: the whole family is revoked.
+model RefreshToken {
+  id           String    @id @default(uuid()) @db.Uuid
+  userId       String    @db.Uuid
+  user         User      @relation(fields: [userId], references: [id])
+  familyId     String    @db.Uuid
+  tokenHash    String    @unique
+  expiresAt    DateTime
+  revokedAt    DateTime?
+  replacedById String?   @db.Uuid
+  createdAt    DateTime  @default(now())
+
+  @@index([userId])
+  @@index([familyId])
+}

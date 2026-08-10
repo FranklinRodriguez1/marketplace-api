@@ -1,0 +1,86 @@
+# CI runs the SAME gate developers run (scripts/verify.sh), so local and CI cannot drift.
+# Make the `verify` job required in branch protection: verify.sh green ⇒ mergeable.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: postgis/postgis:16-3.4 # PostGIS, matching docker-compose.yml
+        env:
+          POSTGRES_USER: cerca
+          POSTGRES_PASSWORD: cerca
+          POSTGRES_DB: cerca
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U cerca -d cerca"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://cerca:cerca@localhost:5432/cerca?schema=public
+      DIRECT_DATABASE_URL: postgresql://cerca:cerca@localhost:5432/cerca?schema=public
+      SHADOW_DATABASE_URL: postgresql://cerca:cerca@localhost:5432/cerca_shadow?schema=public
+      REDIS_URL: redis://localhost:6379
+      NODE_ENV: test
+      JWT_SECRET: ci-secret-value-at-least-32-characters-long
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      # THE gate: contract build · prisma generate · lint · types · tests@100% (domain) ·
+      # build · schema+drift · audit · deprecations.
+      - run: bash scripts/verify.sh --full
+
+      # Prove the migrations apply cleanly and the e2e journeys pass against a real DB + Redis.
+      - run: pnpm --filter @cerca/api prisma migrate deploy
+      - run: pnpm --filter @cerca/api exec tsx prisma/seed.ts
+        env:
+          SEED_LISTINGS: '200'
+      - run: pnpm --filter @cerca/api test:e2e
+
+      - name: Export OpenAPI spec for contract review
+        run: pnpm --filter @cerca/api openapi:export
+        continue-on-error: true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: openapi-spec
+          path: apps/api/openapi.json
+          if-no-files-found: ignore
+
+  image:
+    runs-on: ubuntu-latest
+    needs: verify
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the runtime image (SHA-tagged)
+        run: docker build -f apps/api/Dockerfile -t cerca-api:${{ github.sha }} .
+
+# Deployment is a separate workflow gated on this one:
+#   build & push image (SHA-tagged) → run `prisma migrate deploy` as a ONE-OFF job on a
+#   direct DB connection → roll out the app. Never let the API apply migrations at boot.

@@ -1,0 +1,14 @@
+**/node_modules
+**/dist
+**/coverage
+**/.turbo
+apps/api/src/generated
+.git
+.gitignore
+**/.env
+**/.env.*
+!**/.env.example
+*.log
+openapi.json
+README.md
+DEPLOY.md

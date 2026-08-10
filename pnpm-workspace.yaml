@@ -1,0 +1,10 @@
+packages:
+  - packages/*
+  - apps/*
+
+# Reemplazos de versiones. Antes vivían en el campo "pnpm" de package.json; desde pnpm 10
+# ese campo se ignora y la configuración se lee desde aquí (https://pnpm.io/settings).
+# js-yaml 5.0.0–5.2.1 arrastra una CVE de alta severidad (vía @nestjs/swagger); forzamos
+# una versión ya parcheada.
+overrides:
+  'js-yaml@>=5.0.0 <=5.2.1': '>=5.2.2'
