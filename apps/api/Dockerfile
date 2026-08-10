@@ -19,8 +19,13 @@ COPY apps/api/package.json ./apps/api/
 RUN pnpm install --frozen-lockfile --ignore-scripts
 
 # ---- build: contract → prisma client → api. `prisma generate` needs network (binaries.prisma.sh).
-FROM base AS build
-COPY --from=deps /app/node_modules ./node_modules
+#
+# Builds FROM deps, it does NOT copy node_modules out of it. pnpm does not hoist the
+# workspace link: `@cerca/contract` is linked at apps/api/node_modules/@cerca/contract, not at
+# the root. Copying only /app/node_modules leaves that link behind and tsc then fails with
+# "Cannot find module '@cerca/contract'" on every file that imports it.
+# `COPY . .` cannot clobber them: .dockerignore excludes **/node_modules from the context.
+FROM deps AS build
 COPY . .
 RUN pnpm --filter @cerca/contract build \
  && pnpm --filter @cerca/api exec prisma generate \
@@ -32,6 +37,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends tini && rm -rf 
 ENV NODE_ENV=production PORT=3333
 
 COPY --from=build --chown=node:node /app/node_modules ./node_modules
+# The workspace link lives here, not in the root node_modules — without it the compiled code
+# throws MODULE_NOT_FOUND on `require("@cerca/contract")`. The symlink resolves to
+# /app/packages/contract, whose dist and package.json are copied just below.
+COPY --from=build --chown=node:node /app/apps/api/node_modules ./apps/api/node_modules
 COPY --from=build --chown=node:node /app/packages/contract/dist ./packages/contract/dist
 COPY --from=build --chown=node:node /app/packages/contract/package.json ./packages/contract/package.json
 COPY --from=build --chown=node:node /app/apps/api/dist ./apps/api/dist
