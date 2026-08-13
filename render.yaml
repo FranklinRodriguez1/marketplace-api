@@ -1,0 +1,60 @@
+# =============================================================================
+# Render Blueprint — despliega Postgres+PostGIS, Redis (Key Value) y la API en
+# tier gratuito. Al crear el Blueprint en el dashboard de Render, apuntá a este
+# repo y Render lee este archivo automáticamente.
+#
+# Free tier: la base de datos expira a los 30 días si no se pasa a un plan
+# pago (Render avisa por email antes); el web service "duerme" tras ~15 min
+# sin tráfico (primer request tarda 30-60s en despertar); Redis free tiene
+# 25MB y pierde los datos si se reinicia. Para producción real, cambiá los
+# tres `plan: free` por `starter` y movés las migraciones a `preDeployCommand`
+# (no disponible en free) en vez del `dockerCommand` encadenado de abajo.
+# =============================================================================
+
+databases:
+  - name: cerca-db
+    plan: free
+    region: oregon
+    postgresMajorVersion: "16"
+
+services:
+  - type: keyvalue
+    name: cerca-redis
+    plan: free
+    ipAllowList: [] # solo accesible desde servicios internos de Render
+
+  - type: web
+    name: cerca-api
+    runtime: docker
+    plan: free
+    region: oregon
+    dockerfilePath: ./apps/api/Dockerfile
+    dockerContext: .
+    healthCheckPath: /health/live
+    # Free no soporta preDeployCommand: encadenamos migrate deploy antes de
+    # arrancar. `migrate deploy` es idempotente (salta lo ya aplicado).
+    # node-linker=hoisted (.npmrc) pone el bin de prisma en /app/node_modules/.bin,
+    # no en apps/api/node_modules/.bin — por eso la ruta absoluta.
+    dockerCommand: >-
+      sh -c "/app/node_modules/.bin/prisma migrate deploy && node dist/main.js"
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: cerca-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          name: cerca-redis
+          type: keyvalue
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+      # Poné acá el/los origen(es) reales de tu frontend (separados por coma).
+      - key: CORS_ORIGINS
+        sync: false
+      # Se completa solo tras el primer deploy con la URL real de Render
+      # (ej. https://cerca-api.onrender.com); solo afecta el texto en /docs.
+      - key: PUBLIC_API_URL
+        sync: false
