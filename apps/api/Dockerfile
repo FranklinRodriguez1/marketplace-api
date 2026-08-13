@@ -47,6 +47,7 @@ COPY --from=build --chown=node:node /app/apps/api/dist ./apps/api/dist
 COPY --from=build --chown=node:node /app/apps/api/package.json ./apps/api/package.json
 COPY --from=build --chown=node:node /app/apps/api/prisma ./apps/api/prisma
 COPY --from=build --chown=node:node /app/apps/api/prisma.config.ts ./apps/api/prisma.config.ts
+COPY --from=build --chown=node:node /app/apps/api/start.sh ./apps/api/start.sh
 COPY --from=build --chown=node:node /app/package.json /app/pnpm-workspace.yaml /app/.npmrc ./
 
 USER node

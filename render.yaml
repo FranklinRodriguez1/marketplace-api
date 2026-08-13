@@ -31,12 +31,10 @@ services:
     dockerfilePath: ./apps/api/Dockerfile
     dockerContext: .
     healthCheckPath: /health/live
-    # Free no soporta preDeployCommand: encadenamos migrate deploy antes de
-    # arrancar. `migrate deploy` es idempotente (salta lo ya aplicado).
-    # node-linker=hoisted (.npmrc) pone el bin de prisma en /app/node_modules/.bin,
-    # no en apps/api/node_modules/.bin — por eso la ruta absoluta.
-    dockerCommand: >-
-      sh -c "/app/node_modules/.bin/prisma migrate deploy && node dist/main.js"
+    # Free no soporta preDeployCommand: apps/api/start.sh corre la migración
+    # antes de arrancar. Usamos un script en vez de `sh -c "a && b"` inline
+    # porque Render no respetaba las comillas anidadas del comando compuesto.
+    dockerCommand: sh start.sh
     envVars:
       - key: NODE_ENV
         value: production
