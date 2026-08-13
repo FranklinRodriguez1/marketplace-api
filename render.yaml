@@ -40,6 +40,10 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
+      # Render por defecto espera el puerto 10000; se lo fijamos explícito
+      # para que coincida con el EXPOSE 3333 del Dockerfile y el healthcheck.
+      - key: PORT
+        value: "3333"
       - key: DATABASE_URL
         fromDatabase:
           name: cerca-db
